@@ -24,12 +24,12 @@ def mask_test_features(features_orig, val_frac, test_frac, no_mask):
     print(features_triu)
     features_tuple = sparse_to_tuple(features_triu)[0]
     print('features_tuple')
-    print(features_tuple)
     features_all = sparse_to_tuple(features)[0]
     print('features_all')
     print(features_all)
     num_test = int(np.floor(features_tuple.shape[0] * test_frac))
     num_val = int(np.floor(features_tuple.shape[0] * val_frac))
+    print(np.floor(features_tuple.shape[0]))
 
     all_edge_idx = list(range(features_tuple.shape[0]))
     np.random.shuffle(all_edge_idx)
@@ -144,12 +144,10 @@ def get_scores_features(val_features,val_features_false,Features_pred, features)
     features_rec = copy.deepcopy(Features_pred)
     features_rec[features_rec < thresh] = 0
     features_rec[features_rec >= thresh] = 1
-    print('123123132')
-    print(features)
-    print(features_rec)
-    labels_all = features.toarray().view(-1)
+    labels_all = torch.from_numpy(features.toarray()).view(-1)
     print(labels_all)
-    preds_all = features_rec.numpy().view(-1)
+    preds_all = features_rec.view(-1)
+    print(preds_all)
     recon_acc = (preds_all == labels_all).sum() / labels_all.size(0)
     results = {'roc': roc_auc,
                'pr': pr_auc,
@@ -208,11 +206,10 @@ def train_model(args, dl, vgae):
     # move input data and label to gpu if needed
     features = pickle.load(open(f'data/graphs/{args.dataset}_features.pkl', 'rb'))
     features_train,val_features,val_features_false,test_features,test_features_false=mask_test_features(features, args.val_frac, args.test_frac, args.no_mask)
+    norm_w = features_train.shape[0]*features_train.shape[1] / float((features_train.shape[0]*features_train.shape[1] - features_train.sum()) * 2)
+    pos_weight = torch.FloatTensor([float(features_train.shape[0]*features_train.shape[1] - features_train.sum()) / features_train.sum()]).to(args.device)
     if sp.issparse(features_train):  # 是否为稀疏矩阵
         features_train = torch.FloatTensor(features.toarray()).to(args.device)
-    print(features_train)
-    print(len(torch.unique(features_train)))
-    print(val_features_false)
     #features = dl.features.to(args.device)
     #adj_label = dl.adj_label.to_dense().to(args.device)
     #features_label =dl.features_orig.todense()
@@ -225,29 +222,26 @@ def train_model(args, dl, vgae):
         Features_pred = vgae(features_train)
         optimizer.zero_grad()
         #loss = log_lik = F.binary_cross_entropy_with_logits(Features_pred, features_label, pos_weight=pos_weight)
-        loss = log_lik = F.binary_cross_entropy_with_logits(Features_pred, features_train)
+        loss = log_lik = norm_w*F.binary_cross_entropy_with_logits(Features_pred, features_train)
         if not args.gae:
             kl_divergence = 0.5/Features_pred.size(0) * (1 + 2*vgae.logstd - vgae.mean**2 - torch.exp(2*vgae.logstd)).sum(1).mean()
             loss -= kl_divergence
         Features_pred = torch.sigmoid(Features_pred).detach().cpu()
-        print('features')
-        print(features)
         r = get_scores_features(val_features,val_features_false,Features_pred, features)
        
         #r = get_scores(dl.val_edges, dl.val_edges_false, A_pred, dl.adj_label)
-        print('Epoch{:3}: train_loss: {:.4f} recon_acc: {:.4f} val_roc: {:.4f} val_ap: {:.4f} f1: {:.4f} time: {:.4f}'.format(epoch+1, loss.item(), r['acc'], r['roc'], r['ap'], r['f1'], ))
-        # if r[args.criterion] > best_vali_criterion:
-        #     best_vali_criterion = r[args.criterion]
-        #     best_state_dict = copy.deepcopy(vgae.state_dict())
-        #     # r_test = get_scores(dl.test_edges, dl.test_edges_false, A_pred, dl.adj_label)
-        #     r_test = r
-        #     print("          test_roc: {:.4f} test_ap: {:.4f} test_f1: {:.4f} test_recon_acc: {:.4f}".format(
-        #             r_test['roc'], r_test['ap'], r_test['f1'], r_test['acc']))
+        print('Epoch{:3}: train_loss: {:.4f} recon_acc: {:.4f} val_roc: {:.4f} val_ap: {:.4f} f1: {:.4f} time: {:.4f}'.format(epoch+1, loss.item(), r['acc'], r['roc'], r['ap'], r['f1'],time.time()-t))
+        if r[args.criterion] > best_vali_criterion:
+            best_vali_criterion = r[args.criterion]
+            best_state_dict = copy.deepcopy(vgae.state_dict())
+            # r_test = get_scores(dl.test_edges, dl.test_edges_false, A_pred, dl.adj_label)
+            r_test = r
+            print("          test_roc: {:.4f} test_ap: {:.4f} test_f1: {:.4f} test_recon_acc: {:.4f}".format(
+                    r_test['roc'], r_test['ap'], r_test['f1'], r_test['acc']))
         loss.backward()
         optimizer.step()
     print('Done! final')
-    # print("Done! final results: test_roc: {:.4f} test_ap: {:.4f} test_f1: {:.4f} test_recon_acc: {:.4f}".format(
-    #         r_test['roc'], r_test['ap'], r_test['f1'], r_test['acc']))
+    print("Done! final results: test_roc: {:.4f} test_ap: {:.4f} test_f1: {:.4f} test_recon_acc: {:.4f}".format(r_test['roc'], r_test['ap'], r_test['f1'], r_test['acc']))
 
     #vgae.load_state_dict(best_state_dict)
     return vgae
